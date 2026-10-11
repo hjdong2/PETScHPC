@@ -28,7 +28,7 @@ How to make it count:
 | Week | Topic | Where to read | Done |
 |------|-------|---------------|------|
 | 1 | Amdahl's and Gustafson's laws | LLNL *Introduction to Parallel Computing* | [x] |
-| 2 | Memory hierarchy, caches, cache lines, locality | Eijkhout (single-processor chapter); Drepper (CPU caches, what programmers can do) | [ ] |
+| 2 | Memory hierarchy, caches, cache lines, locality | Eijkhout (single-processor chapter); Drepper (CPU caches, what programmers can do) | [x] |
 | 3 | MPI basics: processes, ranks, send/receive, deadlock | LLNL MPI tutorial | [ ] |
 | 4 | MPI collectives (`Allreduce`, `Bcast`); dot products as a Krylov bottleneck | LLNL MPI tutorial; Eijkhout (parallel linear algebra) | [ ] |
 | 5 | Strong vs. weak scaling, parallel efficiency, load balancing | LLNL intro; Hager & Wellein | [ ] |
@@ -85,5 +85,17 @@ Questions:
 3. Eigen is column-major: why does the loop order `for i … for j … A(i, j)` matter?
 4. In a 5-point-stencil matrix-vector product, each x value is used up to 5 times. When does that reuse come from cache, and when from main memory?
 
-Notes:
+Notes (my laptop: Intel Core Ultra 7 155U — 64 B lines, L1d 48 KiB/core, L2 2 MiB/core, L3 12 MiB shared):
+
+1. **Cache line** = the smallest unit moved between memory and cache (64 B = 8 doubles). Reading one `double` loads the whole aligned 64-byte line containing it. Why: memory latency is high (~100 ns), so the hardware pays it once and brings neighbors along, betting that I will use them (spatial locality). If I only use 8 of the 64 bytes, I waste 7/8 of the bandwidth.
+2. **Spatial locality**: using addresses close to each other, e.g. `for (i...) sum += x[i]*y[i]` — `x[i+1]` is already in the line loaded for `x[i]`.
+   **Temporal locality**: using the *same* data again soon, while it is still in cache. Example from my GMRES (modified Gram-Schmidt): `w` is reused for every `h(i,j) = v_i · w; w -= h(i,j) v_i`, i = 0..j — if `w` fits in cache, it is loaded from memory once and reused j times. (The accumulator `sum` in a dot product is also temporal, but it lives in a register.)
+3. **Column-major**: `A(i,j)` and `A(i+1,j)` are adjacent; `A(i,j)` and `A(i,j+1)` are `n` doubles (8n bytes) apart. With `j` as the inner loop, every access touches a new cache line and uses only 8 of its 64 bytes; for large n those lines are evicted before `i` advances, so each is reloaded → up to 8× more memory traffic. Fix: `for j ... for i ... A(i,j)` (inner loop runs down a column, stride 1). (Row-major C arrays: the opposite.)
+4. **5-point stencil** on an N×N grid, natural (row-by-row) ordering: `y_k = 4x_k − x_{k−1} − x_{k+1} − x_{k−N} − x_{k+N}`. The value `x_m` is used by rows m−N, m−1, m, m+1, m+N.
+   - `x_{k±1}`: same/neighboring cache line, used almost immediately → always from cache.
+   - `x_{k±N}`: first use and last use of `x_m` are 2N rows apart, so about 2N doubles (16N bytes) of `x` must stay in cache in between.
+     - Fits in cache → each `x` comes from main memory ~once. On my laptop: L1 (48 KiB) for N ≲ 3000, L2 (2 MiB) for N ≲ 130 000.
+     - Doesn't fit (very wide grid rows) → `x_{k−N}` is evicted before reuse and loaded again from memory (up to 3 times per value).
+   - The bigger issue: an assembled CSR matrix has 5 values + 5 column indices per row ≈ 60 B/row, streamed once with **no reuse**, vs. 16 B/row for `x` and `y`. So matrix traffic dominates → SpMV is **memory-bound** (→ roofline, week 10). A matrix-free stencil (computing the 4/−1 coefficients on the fly) removes that traffic.
+   - In parallel with DMDA, N is the *local* grid width, so the working set per rank is even smaller.
 
