@@ -16,3 +16,8 @@ pkg_check_modules(PETSC REQUIRED IMPORTED_TARGET PETSc)
 
 add_executable(hello src/hello.cpp)
 target_link_libraries(hello PRIVATE PkgConfig::PETSC)
+target_compile_options(hello PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(dmda src/dmda.cpp)
+target_link_libraries(dmda PRIVATE PkgConfig::PETSC)
+target_compile_options(dmda PRIVATE -Wall -Wextra -Wpedantic)
