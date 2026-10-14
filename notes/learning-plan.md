@@ -119,3 +119,35 @@ Notes:
 2. **Global vs. local vector**: a global vector holds only the owned DoFs and is the parallel vector KSP works on. A local vector belongs to one process and holds owned + ghost values. `DMGlobalToLocal` fills the ghosts from neighbors (halo exchange). Needed when I compute with neighbor values myself (matrix-free operators, residuals) — not for assembly with `MatSetValuesStencil` (→ week 6 reading).
 3. **`DMDAGetCorners`**: `xs, ys` = global indices where my part starts; `xm, ym` = **how many** points I own in each direction. Loop `i = xs … xs+xm−1`, `j = ys … ys+ym−1`. Since `i, j` are global grid indices, I can compute coordinates (`x = i*h`) and detect boundaries (`i == 0 || i == M−1`) directly. Not `0..N` because each rank only sets the rows it owns. (`DMDAGetGhostCorners` gives the region including ghosts.)
 4. **`MatSetValuesStencil`**: rows and columns are given as grid positions `MatStencil {i, j}` (plus `c` for the component when dof > 1), not global row numbers. This matters because **PETSc's parallel ordering is not natural ordering** — each rank's rows are numbered contiguously, so `row = j*M + i` is right on 1 process and wrong on 4. For an interior point: one row stencil `{i, j}`, five column stencils (itself + 4 neighbors), values 4, −1, −1, −1, −1 (× 1/h²). Column stencils may point into a neighbor's region — allowed thanks to the ghost layer.
+
+### Step 2.1 — `src/dmda.cpp` (print each rank's corners)
+
+Goal: create an 8×8 DMDA, print each rank's `xs, ys, xm, ym`, run with 1/2/4 ranks.
+
+Lessons from the code review:
+- **Uninitialized variables**: declaring `xs, ys, xm, ym` without calling `DMDAGetCorners` prints garbage. Compiler warning `-Wmaybe-uninitialized` caught it → treat warnings as bugs.
+- **`DMDAGetCorners` has 7 arguments**: `(da, &x, &y, &z, &m, &n, &p)` — starts first, then widths. In 2D pass `NULL` for `z` and `p`. Check the signature in the man page instead of guessing.
+- **Every Create needs a Destroy**: `DMDestroy(&da)` before `PetscFinalize`. Check leaks with `-malloc_dump`.
+- `PetscFunctionBeginUser;` at the top of `main` (better error tracebacks).
+- Print `PetscInt` with `"%" PetscInt_FMT`, not `%d` (PetscInt may be 64-bit).
+- Print the rank in each line so output from different ranks is easy to tell apart; one line per rank is more readable than several prints.
+- Optional: `DMSetFromOptions(da)` before `DMSetUp` → grid size from the command line (`-da_grid_x 16 -da_grid_y 16`).
+- **CMake arguments are separated by spaces, not commas**: `target_compile_options(dmda PRIVATE -Wall -Wextra)`. With a comma, the target name becomes `dmda,`.
+- New executable → add `add_executable` + `target_link_libraries` in `CMakeLists.txt`, otherwise it is never built.
+
+Build and run (from the project root):
+```bash
+cmake -S . -B build          # configure (needed again only for new files/targets)
+cmake --build build          # compile; enough after editing .cpp files
+mpiexec -n 1 ./build/dmda
+mpiexec -n 4 ./build/dmda
+mpiexec -n 4 ./build/dmda -malloc_dump   # no extra output = no leaks
+```
+When a build fails, read the **first** error — later ones are often caused by it.
+
+TODO (next session):
+- [ ] Fix the two build errors: commas in `target_compile_options`; `DMDAGetCorners` needs 7 arguments
+- [ ] Build and run with `-n 1`, `-n 2`, `-n 4`
+- [ ] Check: `-n 1` gives `xs 0, ys 0, xm 8, ym 8`; with `-n 4` the `xm × ym` values sum to 64 (no gaps/overlaps); how are the 4 ranks arranged (2×2 or 4×1)?
+- [ ] Run with `-malloc_dump`
+- [ ] Commit, then step 2.2: assemble the 5-point Laplacian with `DMCreateMatrix` + `MatSetValuesStencil`
