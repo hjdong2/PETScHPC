@@ -99,3 +99,23 @@ Notes (my laptop: Intel Core Ultra 7 155U — 64 B lines, L1d 48 KiB/core, L2 2 
    - The bigger issue: an assembled CSR matrix has 5 values + 5 column indices per row ≈ 60 B/row, streamed once with **no reuse**, vs. 16 B/row for `x` and `y`. So matrix traffic dominates → SpMV is **memory-bound** (→ roofline, week 10). A matrix-free stencil (computing the 4/−1 coefficients on the fly) removes that traffic.
    - In parallel with DMDA, N is the *local* grid width, so the working set per rank is even smaller.
 
+
+### Week 2 — DMDA basics (prep for week 3)
+
+Questions:
+1. What do `DMDACreate2d`'s arguments mean?
+2. Global vs. local vector — why `DMGlobalToLocal`?
+3. What does `DMDAGetCorners` give, and why loop over `xs..xs+xm` instead of `0..N`?
+4. How does `MatSetValuesStencil` avoid computing global row numbers?
+
+Notes:
+
+1. **`DMDACreate2d`**
+   - Boundary type per direction: `DM_BOUNDARY_NONE` (domain just ends), `DM_BOUNDARY_PERIODIC` (wraps around), `DM_BOUNDARY_GHOSTED` (extra ghost points outside the physical domain). Dirichlet Poisson → `NONE`.
+   - Stencil type: `DMDA_STENCIL_STAR` = only axis neighbors (5-point Laplacian); `DMDA_STENCIL_BOX` = also diagonals (9-point, mixed derivatives, Q1 FEM). Poisson → **STAR, width 1**.
+   - `M, N`: global grid size. `m, n`: process grid, usually `PETSC_DECIDE`.
+   - `dof`: unknowns per grid point — 1 for scalar Poisson, 4 for 2D Euler (ρ, ρu, ρv, E).
+   - Stencil width: how far the stencil reaches, e.g. 2nd-order central difference (u_{i+1} − 2u_i + u_{i−1})/Δx² → 1; 4th-order central → 2. It sets the **number of ghost layers** per rank and the **nonzero pattern** `DMCreateMatrix` preallocates.
+2. **Global vs. local vector**: a global vector holds only the owned DoFs and is the parallel vector KSP works on. A local vector belongs to one process and holds owned + ghost values. `DMGlobalToLocal` fills the ghosts from neighbors (halo exchange). Needed when I compute with neighbor values myself (matrix-free operators, residuals) — not for assembly with `MatSetValuesStencil` (→ week 6 reading).
+3. **`DMDAGetCorners`**: `xs, ys` = global indices where my part starts; `xm, ym` = **how many** points I own in each direction. Loop `i = xs … xs+xm−1`, `j = ys … ys+ym−1`. Since `i, j` are global grid indices, I can compute coordinates (`x = i*h`) and detect boundaries (`i == 0 || i == M−1`) directly. Not `0..N` because each rank only sets the rows it owns. (`DMDAGetGhostCorners` gives the region including ghosts.)
+4. **`MatSetValuesStencil`**: rows and columns are given as grid positions `MatStencil {i, j}` (plus `c` for the component when dof > 1), not global row numbers. This matters because **PETSc's parallel ordering is not natural ordering** — each rank's rows are numbered contiguously, so `row = j*M + i` is right on 1 process and wrong on 4. For an interior point: one row stencil `{i, j}`, five column stencils (itself + 4 neighbors), values 4, −1, −1, −1, −1 (× 1/h²). Column stencils may point into a neighbor's region — allowed thanks to the ghost layer.
