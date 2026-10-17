@@ -21,3 +21,7 @@ target_compile_options(hello PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(dmda src/dmda.cpp)
 target_link_libraries(dmda PRIVATE PkgConfig::PETSC)
 target_compile_options(dmda PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(poisson src/poisson.cpp)
+target_link_libraries(poisson PRIVATE PkgConfig::PETSC)
+target_compile_options(poisson PRIVATE -Wall -Wextra -Wpedantic)
