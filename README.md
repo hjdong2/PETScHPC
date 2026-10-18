@@ -31,4 +31,51 @@ $-\frac{u_{i+1, j} - 2u_{i,j} + u_{i-1, j} + u_{i, j+1} - 2u_{i,j} + u_{i, j-1}}
 - Rows and columns are set with mesh indices (`MatSetValuesStencil`).
 - Solved with Krylov linear solver (KSP), with the solver and preconditioner chosen at the run time (`-ksp_type`, `-pc_type`).
 
+## Build
+- PETSc 3.26.0 built with MPI (e.g. configured with `--download-mpich`)
+- CMake >= 3.20
+- A C++17 compiler
+- `pkg-config`
 
+```bash
+git clone https://github.com/hjdong2/PETScHPC.git
+cd PETScHPC
+export PETSC_DIR=/path/to/petsc        # where PETSc is installed
+export PETSC_ARCH=arch-linux-c-debug   # which PETSc build to use (yours may differ)
+cmake -S . -B build                    # config: find PETSc, generate build files in build/
+cmake --build build                    # compile and link the executables
+```
+This builds `build/poisson` (the solver) and two small learning examples (`build/hello` and `build/dmda`).
+
+## Run
+```bash
+mpiexec -n 4 ./build/poisson -M 129 -ksp_type cg -ksp_rtol 1e-12
+```
+It means run a 129 $\times$ 129 grid using 4 processes with Conjugate Gradient (CG) method, and a tight tolerance (`-ksp_rtol 1e-12`).
+The expected output should be
+```
+M= 129, h = 0.0078125, error= 5.02009e-05
+```
+- If you get the same error, your build works correctly.
+- `error` is the maximum norm difference between 
+the computed and the exact solution.
+
+## Results
+```bash
+for M in 5 9 17 33 65 129; do
+  mpiexec -n 1 ./build/poisson -M $M -ksp_type cg -ksp_rtol 1e-12
+done
+```
+The results are generated using above command, run 1 process, and change $M$ from 5 to 129.
+**Convergence result**:
+
+| M | h | error | ratio |
+|---|---|---|---|
+| 5 | 0.25 | 5.303e-2 | — |
+| 9 | 0.125 | 1.295e-2 | 4.095 |
+| 17 | 0.0625 | 3.219e-3 | 4.023 |
+| 33 | 0.03125 | 8.036e-4 | 4.006 |
+| 65 | 0.015625 | 2.008e-4 | 4.001 |
+| 129 | 0.0078125 | 5.020e-5 | 4.000 |
+- the ratio (error previous M / error current M) is 4, shows the method is second-order ($O(h^2)$)
+- `-n 1` and `-n 4` give the same error ($5.02009e-05$ at $M = 129$)
