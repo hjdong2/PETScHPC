@@ -1,9 +1,6 @@
 
-#include <petscdm.h>
 #include <petscdmda.h>
-#include <petscsys.h>
-#include <petscvec.h>
-#include <petsc.h>
+#include <petscksp.h>
 
 int main (int argc, char** argv)
 {
@@ -22,6 +19,10 @@ int main (int argc, char** argv)
     PetscCall(PetscInitialize(&argc, &argv, NULL, NULL));
     PetscCall(PetscOptionsGetInt(NULL, NULL, "-M", &M, NULL));
     N = M;
+
+    auto onBoundary = [M, N](PetscInt i, PetscInt j) {
+        return (i == 0 || j == 0 || i == M - 1 || j == N - 1);
+    };
 
     PetscCall(DMDACreate2d(
         PETSC_COMM_WORLD,
@@ -43,7 +44,6 @@ int main (int argc, char** argv)
     PetscCall(DMCreateGlobalVector(da, &b));
     PetscCall(VecDuplicate(b, &x));
     PetscCall(VecDuplicate(b, &u));
-    // PetscCall(VecView(b, PETSC_VIEWER_STDOUT_WORLD));
 
     h = 1.0 / (PetscReal)(M - 1);  // assume M == N now
 
@@ -52,10 +52,10 @@ int main (int argc, char** argv)
             row.i = i;
             row.j = j;
 
-            if (i == 0 || j == 0 || i == M - 1 || j == N - 1) {
-                PetscScalar one = 1.0; 
+            if (onBoundary(i, j)) {
+                PetscScalar one = 1.0;  // DBC 
                 PetscCall(MatSetValuesStencil(A, 1, &row, 1, &row, &one, INSERT_VALUES));
-	    } else {
+            } else {
                 num = 0;
 
                 v[num] = 4.0 / (h * h);
@@ -68,7 +68,7 @@ int main (int argc, char** argv)
                     col[num].i = i;
                     col[num].j = j - 1;
                     num++;
-		}
+                }
 
                 if (i - 1 > 0) {
                     v[num] = -1.0 / (h * h);
@@ -82,18 +82,18 @@ int main (int argc, char** argv)
                     col[num].i = i + 1;
                     col[num].j = j;
                     num++;
-		}
+                }
 
                 if (j + 1 < N - 1) {
                     v[num] = -1.0 / (h * h);
                     col[num].i = i;
                     col[num].j = j + 1;
-		    num++;
+                    num++;
                 }
 
                 PetscCall(MatSetValuesStencil(A, 1, &row, num, col, v, INSERT_VALUES));
-	    }
-	}
+            }
+        }
     }
 
     PetscCall(MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY));
@@ -102,30 +102,20 @@ int main (int argc, char** argv)
     PetscCall(DMDAVecGetArray(da, b, &barr));
     for (j = ys; j < ys + ym; ++j) {
         for (i = xs; i < xs + xm; ++i) {
-            if (i == 0 || j == 0 || i == M - 1 || j == N - 1) {
-                 continue;
-	    } else {
-                 barr[j][i] = 2 * PETSC_PI * PETSC_PI  * PetscSinReal(PETSC_PI * i * h) * PetscSinReal(PETSC_PI * j * h);
-	    }
-	}
+            if (!onBoundary(i, j)) {
+                barr[j][i] = 2 * PETSC_PI * PETSC_PI  * PetscSinReal(PETSC_PI * i * h) * PetscSinReal(PETSC_PI * j * h);
+            }
+        }
     }
     PetscCall(DMDAVecRestoreArray(da, b, &barr));
-    // PetscCall(VecView(b, PETSC_VIEWER_STDOUT_WORLD));
     
     PetscCall(DMDAVecGetArray(da, u, &uarr));
     for (j = ys; j < ys + ym; ++j) {
         for (i = xs; i < xs + xm; ++i) {
-            if (i == 0 || j == 0 || i == M - 1 || j == N - 1) {
-                 continue;
-            } else {
-                 uarr[j][i] = PetscSinReal(PETSC_PI * i * h) * PetscSinReal(PETSC_PI * j * h);
-            }
-	}
+             uarr[j][i] = PetscSinReal(PETSC_PI * i * h) * PetscSinReal(PETSC_PI * j * h);
+        }
     }
-
-    PetscBool isSym;
-    MatIsSymmetric(A, 1e-12, &isSym);
-    // PetscCall(PetscPrintf(PETSC_COMM_WORLD, "is symmetic %d \n", (int)isSym));
+    PetscCall(DMDAVecRestoreArray(da, u, &uarr));
 
     PetscCall(KSPCreate(PETSC_COMM_WORLD, &ksp));
     PetscCall(KSPSetOperators(ksp, A, A));
