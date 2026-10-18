@@ -12,7 +12,7 @@ results show identical error ($5.02e-5$ at $129 \times 129$) on 1 and 4 processe
 
 1. Problem and the manufactured solution
 $-\Delta u = f \quad \text{ in } \Omega = (0, 1)^2, \qquad u = 0 \text{ on } \partial\Omega$
-with $ f = 2 \pi^2 \sin(\pi x) \sin(\pi y).$
+with $f = 2 \pi^2 \sin(\pi x) \sin(\pi y).$
 The manufactured (exact) solution is $u = \sin(\pi x) \sin(\pi y)$,
 the manufactured solution vanishes on the boundary, which fits the boundary condition exactly.
 
