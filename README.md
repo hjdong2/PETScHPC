@@ -11,25 +11,25 @@ results show identical error ($5.02e-5$ at $129 \times 129$) on 1 and 4 processe
 ## Problem and method
 
 1. Problem and the manufactured solution
-$$
+$
     -\Delta u = f \quad \text{ in } \Omega = (0, 1)^2, \qquad u = 0 \text{ on } \partial\Omega
-$$
+$
 with
-$$ 
+$ 
     f = 2 \pi^2 \sin(\pi x) \sin(\pi y).
-$$
+$
 The manufactured (exact) solution is
-$$
+$
     u = \sin(\pi x) \sin(\pi y)
-$$
+$
 the manufactured solution vanishes on the boundary, which fits the boundary condition exactly.
 
 2. Discretization
 - The mesh/grid: $M \times N$ points including the boundary with mesh size $h = 1/ (M - 1)$.
 - 5-point stencil scheme
-$$
+$
     -\frac{u_{i+1, j} - 2u_{i,j} + u_{i-1, j} + u_{i, j+1} - 2u_{i,j} + u_{i, j-1}}{h^2} = f_{i, j}
-$$
+$
 
 3. Boundary condition treatment
 - All points on the boundary, i.e., $i = 0$, $i = M - 1$, $j = 0$, $j = N - 1$, are given an identity row (1 on the diagonal, right-hand side 0), which enforces $u_{i, j} = 0$ (Dirichlet BC).
