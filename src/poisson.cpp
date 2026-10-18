@@ -9,9 +9,10 @@ int main (int argc, char** argv)
     DM da;
     Mat A;
     PetscInt xs, ys, xm, ym;
-    PetscScalar h, v[5];
+    PetscScalar v[5];
     PetscInt i, j, M=5, N=5, num;
-    MatStencil row, col[5]; 
+    MatStencil row, col[5];
+    PetscReal h;
 
     PetscFunctionBeginUser;
     PetscCall(PetscInitialize(&argc, &argv, NULL, NULL));
@@ -32,7 +33,7 @@ int main (int argc, char** argv)
     PetscCall(DMDAGetCorners(da, &xs, &ys, NULL, &xm, &ym, NULL));
 
     PetscCall(DMCreateMatrix(da, &A));
-    h = 1.0 / (PetscReal)(M - 1);
+    h = 1.0 / (PetscReal)(M - 1);  // assume M == N now
 
     for (j = ys; j < ys + ym; ++j) {
         for (i = xs; i < xs + xm; ++i) {
@@ -45,34 +46,34 @@ int main (int argc, char** argv)
 	    } else {
                 num = 0;
 
-                v[num] = 4.0;
+                v[num] = 4.0 / (h * h);
                 col[num].i = i;
                 col[num].j = j;
                 num++;
 
                 if (j - 1 > 0) {
-                    v[num] = -1.0;
+                    v[num] = -1.0 / (h * h);
                     col[num].i = i;
                     col[num].j = j - 1;
                     num++;
 		}
 
                 if (i - 1 > 0) {
-                    v[num] = -1.0;
+                    v[num] = -1.0 / (h * h);
                     col[num].i = i - 1;
                     col[num].j = j;
                     num++;
                 }
 
                 if (i + 1 < M - 1) {
-                    v[num] = -1.0;
+                    v[num] = -1.0 / (h * h);
                     col[num].i = i + 1;
                     col[num].j = j;
                     num++;
 		}
 
                 if (j + 1 < N - 1) {
-                    v[num] = -1.0;
+                    v[num] = -1.0 / (h * h);
                     col[num].i = i;
                     col[num].j = j + 1;
 		    num++;
@@ -85,6 +86,10 @@ int main (int argc, char** argv)
 
     PetscCall(MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY));
     PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
+
+    PetscBool isSym;
+    MatIsSymmetric(A, 1e-12, &isSym);
+    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "is symmetic %d \n", (int)isSym));
 
     PetscCall(MatDestroy(&A));
     PetscCall(DMDestroy(&da));
