@@ -10,7 +10,7 @@ Develop in WSL; run scaling experiments on the CRC cluster.
 ## Project plan
 
 - [x] **Week 1 (Oct 5–11)** — Install PETSc in WSL, run KSP tutorial `ex2`, get a CRC account
-- [ ] **Week 2 (Oct 12–18)** — Repository + CMake finding PETSc (pkg-config, `mpicc`/`mpicxx`); "hello PETSc" printing ranks with `mpiexec -n 4`; optional: read about DMDA
+- [x] **Week 2 (Oct 12–18)** — Repository + CMake finding PETSc (pkg-config, `mpicc`/`mpicxx`); "hello PETSc" printing ranks with `mpiexec -n 4`; optional: read about DMDA
 - [ ] **Week 3 (Oct 19–25)** — 2D Poisson solver with DMDA; verify with a manufactured solution (error should decrease like h²)
 - [ ] **Week 4 (Oct 26–Nov 1)** — Compare solvers and preconditioners (`-ksp_type`, `-pc_type`, incl. `gamg`; `-log_view`)
 - [ ] **Weeks 5–6 (Nov 2–15)** — On CRC: batch jobs, strong and weak scaling, plots
@@ -145,9 +145,50 @@ mpiexec -n 4 ./build/dmda -malloc_dump   # no extra output = no leaks
 ```
 When a build fails, read the **first** error — later ones are often caused by it.
 
-TODO (next session):
-- [ ] Fix the two build errors: commas in `target_compile_options`; `DMDAGetCorners` needs 7 arguments
-- [ ] Build and run with `-n 1`, `-n 2`, `-n 4`
-- [ ] Check: `-n 1` gives `xs 0, ys 0, xm 8, ym 8`; with `-n 4` the `xm × ym` values sum to 64 (no gaps/overlaps); how are the 4 ranks arranged (2×2 or 4×1)?
-- [ ] Run with `-malloc_dump`
-- [ ] Commit, then step 2.2: assemble the 5-point Laplacian with `DMCreateMatrix` + `MatSetValuesStencil`
+TODO (done 2026-10-14):
+- [x] Fix the two build errors: commas in `target_compile_options`; `DMDAGetCorners` needs 7 arguments
+- [x] Build and run with `-n 1`, `-n 2`, `-n 4`
+- [x] Check: `-n 1` gives `xs 0, ys 0, xm 8, ym 8`; with `-n 4` the `xm × ym` values sum to 64 (no gaps/overlaps); how are the 4 ranks arranged (2×2 or 4×1)?
+- [x] Run with `-malloc_dump`
+- [x] Commit, then step 2.2: assemble the 5-point Laplacian with `DMCreateMatrix` + `MatSetValuesStencil`
+
+Results (8×8 grid):
+```
+ -n 2: 1×2 process grid (split in y)     -n 4: 2×2 process grid
+ ┌─────────────────┐                     ┌────────┬────────┐
+ │ Rank 1  ys=4    │                     │ Rank 2 │ Rank 3 │   ys=4
+ ├─────────────────┤                     ├────────┼────────┤
+ │ Rank 0  ys=0    │                     │ Rank 0 │ Rank 1 │   ys=0
+ └─────────────────┘                     └────────┴────────┘
+   xm=8, ym=4                              xs=0     xs=4,  xm=ym=4
+```
+- Ranks are numbered x first (like grid points: i is fastest).
+- PETSc ordering with `-n 4`: rank 0 → rows 0–15, rank 1 → 16–31, … So point (4,0) is row 16, not `j*8+i = 4` → use `MatSetValuesStencil`, never compute row numbers myself.
+- **Why squares, not strips?** Same work per rank (N²/p), but ghost values per rank: strips 2N (constant in p), squares ≈ 4N/√p (shrinks). For 8×8, p=4: worst rank 16 (strips) vs 8 (squares). Strips have fewer neighbors (fewer messages, less latency) — only better for small p. Force a layout: `-da_processors_x 1 -da_processors_y 4` (needs `DMSetFromOptions`).
+
+### Step 2.2 — `src/poisson.cpp` (assemble the Dirichlet 5-point Laplacian)
+
+Problem: −Δu = f on (0,1)², **u = 0 on the boundary (homogeneous Dirichlet)**. Manufactured solution u = sin(πx)sin(πy), f = 2π² sin(πx)sin(πy).
+
+How the matrix is built (M×M points incl. boundary, h = 1/(M−1), 1 process: row k = j*M + i):
+- One unknown per grid point → one row (equation) + one column per point.
+- **Boundary row**: `1 · u = 0` → one entry, 1 on the diagonal (pass `&row` as the column too).
+- **Interior row**: (4u − 4 neighbors)/h², but **only interior neighbors** — a boundary neighbor has u = 0, so its term drops (if g ≠ 0: move g/h² to the RHS). This keeps A **symmetric** → CG works.
+- Entries per row on 5×5: center 5, next to one edge 4, next to a corner 3, boundary 1.
+- Loop over owned points (`j` outer, `i` inner), fill `col[]`/`v[]` with a counter `num` (= next free slot), call `MatSetValuesStencil(A, 1, &row, num, col, v, INSERT_VALUES)`, then `MatAssemblyBegin/End`.
+- Dirichlet vs Neumann: Neumann (ex50) has row sums 0 → A·1 = 0 → singular, needs `MatNullSpace` + compatibility ∫f = 0. **Check what problem an example solves before copying its code.**
+
+Bugs I fixed (in order):
+1. `Mat A;` not declared → compile error.
+2. Typo `PestcCall` → the compiler suggests the fix; read it.
+3. `M, N` uninitialized → garbage grid size. **No compiler warning this time** — can't rely on warnings.
+4. `MatNullSpace` declared but never created → "Wrong type of object: Parameter # 2". Read the traceback **bottom up** to find my line.
+5. Neumann boundary rows copied from ex50 → replaced with identity rows.
+6. Missing `num++` after the center → next entry overwrote it, diagonal = 0. **Every filled slot must advance `num`.**
+7. Off-by-one: right/top neighbor checked `i + 1 < M` instead of `i + 1 < M − 1` → boundary columns added. Most common bug in numerical code.
+Also: `h` should be `PetscReal`, not `PetscScalar` (complex builds); scale interior entries by 1/h², boundary rows stay 1.
+
+Reading `-mat_view`:
+- Prints at **every** assembly → the first all-zero matrix comes from `DMCreateMatrix` (reserved pattern).
+- `(col, 0.)` entries are **stored zeros** from the preallocated 5-point pattern — ignore them, look only at nonzeros.
+- Check by hand on a tiny grid (M = 5, h = 0.25 → 64 and −16), and in code with `MatIsSymmetric(A, 1e-12, &isSym)` on `-n 1` and `-n 4` → both 1.
