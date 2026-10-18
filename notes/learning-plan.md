@@ -11,7 +11,7 @@ Develop in WSL; run scaling experiments on the CRC cluster.
 
 - [x] **Week 1 (Oct 5–11)** — Install PETSc in WSL, run KSP tutorial `ex2`, get a CRC account
 - [x] **Week 2 (Oct 12–18)** — Repository + CMake finding PETSc (pkg-config, `mpicc`/`mpicxx`); "hello PETSc" printing ranks with `mpiexec -n 4`; optional: read about DMDA
-- [ ] **Week 3 (Oct 19–25)** — 2D Poisson solver with DMDA; verify with a manufactured solution (error should decrease like h²)
+- [x] **Week 3 (Oct 19–25)** — 2D Poisson solver with DMDA; verify with a manufactured solution (error should decrease like h²) — DONE early (2026-10-18)
 - [ ] **Week 4 (Oct 26–Nov 1)** — Compare solvers and preconditioners (`-ksp_type`, `-pc_type`, incl. `gamg`; `-log_view`)
 - [ ] **Weeks 5–6 (Nov 2–15)** — On CRC: batch jobs, strong and weak scaling, plots
 - [ ] **Week 7 (Nov 16–22)** — My Eigen GMRES vs. PETSc's KSPGMRES; README → **minimum version done, update résumé, start applying**
@@ -192,3 +192,40 @@ Reading `-mat_view`:
 - Prints at **every** assembly → the first all-zero matrix comes from `DMCreateMatrix` (reserved pattern).
 - `(col, 0.)` entries are **stored zeros** from the preallocated 5-point pattern — ignore them, look only at nonzeros.
 - Check by hand on a tiny grid (M = 5, h = 0.25 → 64 and −16), and in code with `MatIsSymmetric(A, 1e-12, &isSym)` on `-n 1` and `-n 4` → both 1.
+
+### Step 2.3 — right-hand side, solve, verify O(h²) (done 2026-10-18)
+
+Code steps:
+- Vectors: `DMCreateGlobalVector(da, &b)` (same parallel layout as A's rows), `VecDuplicate(b, &x)` / `&u`. Every Create → Destroy.
+- Fill with grid indices: `DMDAVecGetArray(da, b, &barr)` → loop over owned points, **`barr[j][i]`** (j first!) → `DMDAVecRestoreArray`. Boundary entries of b = 0 (equation `1·u = 0`); interior = f.
+- Solve: `KSPCreate` → `KSPSetOperators(ksp, A, A)` → `KSPSetFromOptions` → `KSPSolve(ksp, b, x)` → `KSPDestroy`. Only after `MatAssemblyEnd`.
+- Error: `VecAXPY(x, -1.0, u)` (x ← x − u), `VecNorm(x, NORM_INFINITY, &err)`.
+- Grid size from the command line: `PetscOptionsGetInt(NULL, NULL, "-M", &M, NULL)` before `DMDACreate2d`, then `N = M`.
+
+Bugs / lessons:
+- **Segfault**: wrote `barr[j][i]` *before* `DMDAVecGetArray` → garbage pointer → SIGSEGV. For a segfault, the traceback line is only "the last `PetscCall` that succeeded" — the bug is somewhere after it.
+- `PetscCosReal` instead of `PetscSinReal` for y → caught by checking one value by hand (center should be 2π² ≈ 19.739).
+- `PetscINT_FMT` → names are **case-sensitive**; one typo gave 3 compiler messages — read the first.
+- `"%d" PetscInt_FMT` printed `5d` — `PetscInt_FMT` already contains the `d`; write `"%" PetscInt_FMT`.
+- PETSc warns about **unused options** (`Option left: -vec_view`) → catches spelling mistakes like `-ksp_tpye`.
+- Use `-ksp_rtol 1e-12` for convergence studies so solver error doesn't pollute discretization error.
+
+Solver observations (M = 5):
+- Default (GMRES + ILU) and CG: 4 iterations on 1 process. CG works because A is SPD (symmetric boundary treatment!).
+- CG on 4 processes: 5 iterations — default PC becomes block Jacobi (ILU per rank, ignores coupling between ranks) → weaker → more iterations.
+- With 5×5 on a 2×2 process grid, blocks are 3×3, 2×3, 3×2, 2×2 (5 not divisible by 2).
+
+**Convergence result** (`-ksp_type cg -ksp_rtol 1e-12`, max-norm error):
+
+| M | h | error | ratio |
+|---|---|---|---|
+| 5 | 0.25 | 5.303e-2 | — |
+| 9 | 0.125 | 1.295e-2 | 4.095 |
+| 17 | 0.0625 | 3.219e-3 | 4.023 |
+| 33 | 0.03125 | 8.036e-4 | 4.006 |
+| 65 | 0.015625 | 2.008e-4 | 4.001 |
+| 129 | 0.0078125 | 5.020e-5 | 4.000 |
+
+- Ratio → 4 ⇒ **O(h²)**. Early ratios > 4 because of higher-order terms (h⁴, …) on coarse grids.
+- `-n 1` and `-n 4` give the same error (5.02009e-05 at M = 129) → parallel code matches serial.
+- **Analytic check**: sin(πx)sin(πy) is an eigenvector of the discrete Laplacian with λ_h = (8/h²) sin²(πh/2), so the discrete solution is (2π²/λ_h)·u and the max error is exactly 2π²/λ_h − 1. Every measured error matches this formula to all printed digits.
