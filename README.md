@@ -22,11 +22,13 @@ the manufactured solution vanishes on the boundary, which fits the boundary cond
 $-\frac{u_{i+1, j} - 2u_{i,j} + u_{i-1, j} + u_{i, j+1} - 2u_{i,j} + u_{i, j-1}}{h^2} = f_{i, j} $
 
 ### Boundary condition treatment
-- All points on the boundary, i.e., $i = 0$, $i = M - 1$, $j = 0$, $j = M - 1$, are given an identity row (1 on the diagonal, right-hand side 0), which enforces $u_{i, j} = 0$ (Dirichlet BC).
+- All points on the boundary, i.e., $i = 0$, or $i = M - 1$, $j = 0$, or $j = M - 1$, are given an identity row (1 on the diagonal, right-hand side 0), which enforces $u_{i, j} = 0$ (Dirichlet BC).
 - For interior points that have a boundary point as a neighbor, the boundary neighbor's entry is left out of the row, so the row has fewer than 5 entries. The neighbor's value is known to be 0, so its term in the stencil is 0.
-- The boundary columns are left out of the interior rows, so the matrix $A$ to solve the final linear system $Ax = b$ is SPD (syppetric positive definite). This allows us to use Conjugate Gradient (CG) method, `-ksp_type cg`, which is the natural Krylov solver for SPD systems.
+- The boundary columns are left out of the interior rows, so the matrix $A$ to solve the final linear system $Ax = b$ is SPD (symmetric positive definite). This allows us to use Conjugate Gradient (CG) method, `-ksp_type cg`, which is the natural Krylov solver for SPD systems.
 
 ### Parallel implementation
 - PETSc DMDA splits the mesh into blocks, one per MPI process, and each process assembles only the rows it owns.
 - Rows and columns are set with mesh indices (`MatSetValuesStencil`).
 - Solved with Krylov linear solver (KSP), with the solver and preconditioner chosen at the run time (`-ksp_type`, `-pc_type`).
+
+
