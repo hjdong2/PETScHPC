@@ -29,7 +29,7 @@ How to make it count:
 |------|-------|---------------|------|
 | 1 | Amdahl's and Gustafson's laws | LLNL *Introduction to Parallel Computing* | [x] |
 | 2 | Memory hierarchy, caches, cache lines, locality | Eijkhout (single-processor chapter); Drepper (CPU caches, what programmers can do) | [x] |
-| 3 | MPI basics: processes, ranks, send/receive, deadlock | LLNL MPI tutorial | [ ] |
+| 3 | MPI basics: processes, ranks, send/receive, deadlock | LLNL MPI tutorial | [x] |
 | 4 | MPI collectives (`Allreduce`, `Bcast`); dot products as a Krylov bottleneck | LLNL MPI tutorial; Eijkhout (parallel linear algebra) | [ ] |
 | 5 | Strong vs. weak scaling, parallel efficiency, load balancing | LLNL intro; Hager & Wellein | [ ] |
 | 6 | Domain decomposition, halo/ghost exchange (what DMDA does) | Eijkhout; PETSc manual (DMDA) | [ ] |
@@ -229,3 +229,64 @@ Solver observations (M = 5):
 - Ratio → 4 ⇒ **O(h²)**. Early ratios > 4 because of higher-order terms (h⁴, …) on coarse grids.
 - `-n 1` and `-n 4` give the same error (5.02009e-05 at M = 129) → parallel code matches serial.
 - **Analytic check**: sin(πx)sin(πy) is an eigenvector of the discrete Laplacian with λ_h = (8/h²) sin²(πh/2), so the discrete solution is (2π²/λ_h)·u and the max error is exactly 2π²/λ_h − 1. Every measured error matches this formula to all printed digits.
+
+### Week 3 — MPI basics
+
+Questions:
+1. What is an MPI process, a rank, a communicator? `PETSC_COMM_WORLD` vs `MPI_COMM_WORLD`?
+2. Blocking vs non-blocking communication — why does non-blocking help?
+3. How can two processes deadlock with `MPI_Send`/`MPI_Recv`? How to avoid it?
+4. In my 4-rank Poisson run, which PETSc calls communicate, and what kind of communication?
+
+Notes:
+
+1. **Process**: one running copy of the program with its **own private memory** (distributed memory). Processes share no variables — data moves only by explicit messages.
+   **Rank**: the process's integer ID inside a communicator, `0 … size−1` (`MPI_Comm_rank`, `MPI_Comm_size`).
+   **Communicator**: a group of processes that can talk to each other, plus a private "context" so messages in one communicator never mix with another. `MPI_COMM_WORLD` = all processes started by `mpiexec`.
+   `PETSC_COMM_WORLD`: PETSc's communicator — by default a **duplicate** of `MPI_COMM_WORLD` (same processes, separate context, so PETSc's internal messages can't collide with mine). It can be set to a subset of processes before `PetscInitialize`.
+2. **Blocking** (`MPI_Send`/`MPI_Recv`): the call returns only when it is safe to continue — for `MPI_Recv` the data has arrived; for `MPI_Send` the send buffer can be reused (the message may only be buffered, not yet received).
+   **Non-blocking** (`MPI_Isend`/`MPI_Irecv`): returns immediately with a request; I must not touch the buffer until `MPI_Wait`/`MPI_Waitall`. In between I can do **independent** work → overlap communication with computation.
+   Ideal cost: blocking T = T_comp + T_comm; overlapped T ≈ max(T_comp, T_comm) (upper bound on the gain — needs work that doesn't depend on the incoming data).
+   PETSc example: parallel `MatMult` starts the halo exchange, multiplies the **local (diagonal) block** while ghost values are in flight, then finishes the exchange and multiplies the **off-process block**. Same idea as `MatAssemblyBegin/End` and `DMGlobalToLocalBegin/End`.
+3. **Deadlock**: every process waits for another, forever.
+   - Rank 0 and rank 1 both call `MPI_Recv` first, then `MPI_Send` → both wait for a message nobody sends. Always deadlocks.
+   - Both call `MPI_Send` first → **unsafe**: works for small messages (MPI buffers them, "eager" protocol) but **hangs for large ones** (send waits for the matching receive, "rendezvous"). Bug that appears only when the problem size grows.
+   - Fixes: `MPI_Sendrecv` (MPI pairs them safely); order by rank (even ranks send first, odd ranks receive first); or non-blocking `MPI_Irecv` + `MPI_Isend` + `MPI_Waitall`.
+4. **Communication in my Poisson solver** (4 ranks):
+   - `MatAssemblyBegin/End`: sends values set for rows owned by **other** ranks (the "stash"). In my code each rank sets only its own rows, so almost nothing is sent — but the call is still collective (all ranks must call it).
+   - `MatMult` (inside every KSP iteration): **neighbor-to-neighbor halo exchange** — each rank needs only the ghost values of `x` along its block edges from adjacent ranks, not the global vector. Cost ∝ block perimeter (→ squares vs. strips).
+   - `VecDot` / `VecNorm`: **global reduction** (`MPI_Allreduce`) — every rank computes a partial sum, and all ranks need the total. Involves all ranks → latency grows with log(p) and acts like a serial part (Amdahl).
+   - Per CG iteration: 1 `MatMult` (halo) + 2 dot products and a norm (Allreduces). → Week 4 reading: why Allreduce limits Krylov scaling.
+
+### Week 4 plan — compare Krylov solvers and preconditioners
+
+Goal: on a range of grid sizes, measure **iterations** and **time** for several KSP/PC combinations, explain the results, and add them to the README.
+
+- [ ] **Step 1 — optimized PETSc build** (~30 min, mostly waiting). Timings from a debug build are meaningless (no `-O3`, extra checks). Keep the debug build for development; add a second build:
+  ```bash
+  cd ~/petsc
+  ./configure PETSC_ARCH=arch-linux-c-opt --with-debugging=0 \
+    COPTFLAGS=-O3 CXXOPTFLAGS=-O3 FOPTFLAGS=-O3 \
+    --with-cc=gcc --with-cxx=g++ --with-fc=gfortran \
+    --download-mpich --download-fblaslapack
+  make PETSC_DIR=$HOME/petsc PETSC_ARCH=arch-linux-c-opt all
+  ```
+  Then a separate project build dir: `PETSC_ARCH=arch-linux-c-opt cmake -S . -B build-opt && cmake --build build-opt` (add `build-opt/` to `.gitignore`). Question to answer: why does `mpiexec` come from the arch you built with?
+- [ ] **Step 2 — print the iteration count** in `poisson.cpp` with `KSPGetIterationNumber` (and the converged reason with `KSPGetConvergedReason`), so one output line contains M, iterations, error.
+- [ ] **Step 3 — learn to read `-log_view`** on one run (e.g. M = 513, CG + GAMG): find `KSPSolve`, `MatMult`, `PCSetUp`, `PCApply`, `VecTDot`/`VecNorm`. What do the columns Count, Time, %T mean? Which event takes most time?
+- [ ] **Step 4 — experiment 1: iterations vs. grid size** (1 process, opt build), M = 65, 129, 257, 513, 1025:
+  - `-ksp_type cg` with `-pc_type none | jacobi | ilu | gamg`
+  - `-ksp_type gmres -pc_type ilu` (compare with CG + ILU)
+  - Fair comparison: same tolerance for all (`-ksp_rtol 1e-8`) and the same residual norm (`-ksp_norm_type unpreconditioned`; GMRES also needs `-ksp_pc_side right` for that norm).
+  - Predict first, then check: κ(A) ∝ h⁻², CG iterations ∝ √κ ∝ 1/h → doubling M doubles iterations for `none`/`jacobi`/`ilu`; GAMG ≈ constant.
+- [ ] **Step 5 — experiment 2: time vs. grid size** for the same runs: total `KSPSolve` time and setup (`PCSetUp`) time from `-log_view`. Which method wins at small M, which at large M? Why is GAMG's setup expensive but worth it?
+- [ ] **Step 6 — experiment 3: effect of parallelism on the preconditioner** (M = 513, `-n 1, 2, 4`): CG + ILU (becomes block Jacobi + ILU in parallel) vs. CG + GAMG. How do the iteration counts change, and why?
+- [ ] **Step 7 — automate**: a small bash script that loops over M and solvers and writes one line per run to a CSV file (`results/week4.csv`).
+- [ ] **Step 8 — plot** with Python/matplotlib: iterations vs. M and time vs. M (log-log), one line per method. Save as PNG in `results/`.
+- [ ] **Step 9 — README**: add a "Solver comparison" subsection with the table/plot and 3–4 bullets explaining it (condition number, why multigrid scales, setup vs. solve cost).
+- [ ] **Reading (week 4)**: MPI collectives (`MPI_Allreduce`, `MPI_Bcast`); why dot products limit Krylov scaling. Tie to my `-log_view`: how many `VecTDot`/`VecNorm` calls per CG iteration?
+
+Interview one-liners to be able to say after this week:
+- "CG iterations grow like √κ ∝ 1/h for the Laplacian; multigrid makes them h-independent."
+- "Block Jacobi weakens as I add processes, because it ignores coupling between subdomains."
+- "GAMG has a high setup cost but the lowest total time for large problems."
