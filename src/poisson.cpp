@@ -122,9 +122,16 @@ int main (int argc, char** argv)
     PetscCall(KSPSetFromOptions(ksp));
     PetscCall(KSPSolve(ksp, b, x));
 
+    PetscInt its;
+    PetscCall(KSPGetIterationNumber(ksp, &its));
+
+    KSPConvergedReason reason;
+    PetscCall(KSPGetConvergedReason(ksp, &reason));
+
     PetscCall(VecAXPY(x, -1.0, u));
     PetscCall(VecNorm(x, NORM_INFINITY, &err));
-    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "M= %" PetscInt_FMT ", h = %g, error= %g\n", M, (double)h, (double)err));
+    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "M= %" PetscInt_FMT ", h = %g, error= %g, its= %" PetscInt_FMT ", reason= %s\n", 
+        M, (double)h, (double)err, its, KSPConvergedReasons[reason]));
 
     PetscCall(KSPDestroy(&ksp));
     PetscCall(MatDestroy(&A));
