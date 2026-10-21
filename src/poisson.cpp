@@ -19,6 +19,8 @@ int main (int argc, char** argv)
     PetscCall(PetscInitialize(&argc, &argv, NULL, NULL));
     PetscCall(PetscOptionsGetInt(NULL, NULL, "-M", &M, NULL));
     N = M;
+    PetscBool randomRhs = PETSC_FALSE;
+    PetscCall(PetscOptionsGetBool(NULL, NULL, "-random_rhs", &randomRhs, NULL));
 
     auto onBoundary = [M, N](PetscInt i, PetscInt j) {
         return (i == 0 || j == 0 || i == M - 1 || j == N - 1);
@@ -108,7 +110,9 @@ int main (int argc, char** argv)
         }
     }
     PetscCall(DMDAVecRestoreArray(da, b, &barr));
-    
+    if (randomRhs) {
+        PetscCall(VecSetRandom(b, NULL));
+    } 
     PetscCall(DMDAVecGetArray(da, u, &uarr));
     for (j = ys; j < ys + ym; ++j) {
         for (i = xs; i < xs + xm; ++i) {
@@ -130,9 +134,14 @@ int main (int argc, char** argv)
 
     PetscCall(VecAXPY(x, -1.0, u));
     PetscCall(VecNorm(x, NORM_INFINITY, &err));
-    PetscCall(PetscPrintf(PETSC_COMM_WORLD, "M= %" PetscInt_FMT ", h = %g, error= %g, its= %" PetscInt_FMT ", reason= %s\n", 
-        M, (double)h, (double)err, its, KSPConvergedReasons[reason]));
-
+    if (randomRhs) {
+        PetscCall(PetscPrintf(PETSC_COMM_WORLD, "M= %" PetscInt_FMT ", h = %g, its= %" PetscInt_FMT ", reason= %s\n", 
+            M, (double)h, its, KSPConvergedReasons[reason]));
+    }
+    else {
+        PetscCall(PetscPrintf(PETSC_COMM_WORLD, "M= %" PetscInt_FMT ", h = %g, err= %g, its= %" PetscInt_FMT ", reason= %s\n",
+            M, (double)h, (double)err, its, KSPConvergedReasons[reason]));
+    }
     PetscCall(KSPDestroy(&ksp));
     PetscCall(MatDestroy(&A));
     PetscCall(VecDestroy(&b));

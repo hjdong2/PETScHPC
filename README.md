@@ -54,7 +54,7 @@ mpiexec -n 4 ./build/poisson -M 129 -ksp_type cg -ksp_rtol 1e-12
 It means run a 129 $\times$ 129 grid using 4 processes with Conjugate Gradient (CG) method, and a tight tolerance (`-ksp_rtol 1e-12`).
 The expected output should be
 ```
-M= 129, h = 0.0078125, error= 5.02009e-05
+M= 129, h = 0.0078125, err= 5.02009e-05, its= 157, reason= CONVERGED_RTO
 ```
 - If you get the same error, your build works correctly.
 - `error` is the maximum norm difference between 
@@ -69,7 +69,7 @@ done
 The results are generated using above command, run 1 process, and change $M$ from 5 to 129.
 **Convergence result**:
 
-| M | h | error | ratio |
+| M | h | err | ratio |
 |---|---|---|---|
 | 5 | 0.25 | 5.303e-2 | — |
 | 9 | 0.125 | 1.295e-2 | 4.095 |

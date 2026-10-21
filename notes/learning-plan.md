@@ -262,7 +262,7 @@ Notes:
 
 Goal: on a range of grid sizes, measure **iterations** and **time** for several KSP/PC combinations, explain the results, and add them to the README.
 
-- [ ] **Step 1 — optimized PETSc build** (~30 min, mostly waiting). Timings from a debug build are meaningless (no `-O3`, extra checks). Keep the debug build for development; add a second build:
+- [x] **Step 1 — optimized PETSc build** (~30 min, mostly waiting). Timings from a debug build are meaningless (no `-O3`, extra checks). Keep the debug build for development; add a second build:
   ```bash
   cd ~/petsc
   ./configure PETSC_ARCH=arch-linux-c-opt --with-debugging=0 \
@@ -272,8 +272,8 @@ Goal: on a range of grid sizes, measure **iterations** and **time** for several 
   make PETSC_DIR=$HOME/petsc PETSC_ARCH=arch-linux-c-opt all
   ```
   Then a separate project build dir: `PETSC_ARCH=arch-linux-c-opt cmake -S . -B build-opt && cmake --build build-opt` (add `build-opt/` to `.gitignore`). Question to answer: why does `mpiexec` come from the arch you built with?
-- [ ] **Step 2 — print the iteration count** in `poisson.cpp` with `KSPGetIterationNumber` (and the converged reason with `KSPGetConvergedReason`), so one output line contains M, iterations, error.
-- [ ] **Step 3 — learn to read `-log_view`** on one run (e.g. M = 513, CG + GAMG): find `KSPSolve`, `MatMult`, `PCSetUp`, `PCApply`, `VecTDot`/`VecNorm`. What do the columns Count, Time, %T mean? Which event takes most time?
+- [x] **Step 2 — print the iteration count** in `poisson.cpp` with `KSPGetIterationNumber` (and the converged reason with `KSPGetConvergedReason`), so one output line contains M, iterations, error.
+- [x] **Step 3 — learn to read `-log_view`** on one run (e.g. M = 513, CG + GAMG): find `KSPSolve`, `MatMult`, `PCSetUp`, `PCApply`, `VecTDot`/`VecNorm`. What do the columns Count, Time, %T mean? Which event takes most time?
 - [ ] **Step 4 — experiment 1: iterations vs. grid size** (1 process, opt build), M = 65, 129, 257, 513, 1025:
   - `-ksp_type cg` with `-pc_type none | jacobi | ilu | gamg`
   - `-ksp_type gmres -pc_type ilu` (compare with CG + ILU)
@@ -290,3 +290,31 @@ Interview one-liners to be able to say after this week:
 - "CG iterations grow like √κ ∝ 1/h for the Laplacian; multigrid makes them h-independent."
 - "Block Jacobi weakens as I add processes, because it ignores coupling between subdomains."
 - "GAMG has a high setup cost but the lowest total time for large problems."
+
+### Week 4 — steps 1–3 results (2026-10-19)
+
+**Step 1 — opt build**: `arch-linux-c-opt` next to `arch-linux-c-debug` (one PETSc source, several builds via `PETSC_ARCH`).
+- Project: `PETSC_ARCH=arch-linux-c-opt cmake -S . -B build-opt` — always use the prefix for `build-opt` commands (CMake re-reads the env var when it re-configures).
+- Run with the matching launcher: `MPIOPT=~/petsc/arch-linux-c-opt/bin/mpiexec`. Check linking with `ldd build-opt/poisson | grep petsc`.
+- M = 513, CG: debug 4.15 s vs opt 1.69 s → only **2.5×**, because CG is dominated by **memory-bound** MatMult/vector ops; `-O3` speeds up arithmetic, not memory (→ roofline, week 10).
+
+**Step 2 — iterations**: `KSPGetIterationNumber`, `KSPGetConvergedReason` + `KSPConvergedReasons[reason]` (string). Always check the reason — a `DIVERGED_ITS` run has invalid iterations/time.
+- Bug: a `)` closed `PetscPrintf(` too early → format warnings + garbage output (`its= -2072633264, reason= (null)`). **Format warnings are real bugs.**
+- Habit: save → build → run. If output doesn't change, check the binary is newer than the source (`ls -l`).
+
+**Step 3 — reading `-log_view`** (opt, M = 513, CG + GAMG, rtol 1e-8, 11 iterations, total 0.63 s):
+- Columns: **Count** (calls), **Time** (total seconds), **%T** (share of total time), Flop, and for parallel runs Mess/AvgLen/Reduct (messages, reductions).
+- Events are **nested**: `KSPSolve` ⊃ `PCApply` ⊃ `MatMult`; `PCSetUp` ⊃ `MatPtAP`, `PCGAMG …`. Also look at **leaf** events (actual work).
+- `PCSetUp` 0.376 s (**59%**) > whole `KSPSolve` 0.187 s; `PCApply` = 87% of `KSPSolve`. Largest leaf: `MatMult` 16% time, 45% of flops.
+- `MatMult` count 243 ≫ 12 (11 iterations + initial residual): the rest are **inside GAMG** (smoother steps on every level + eigenvalue estimates for the Chebyshev smoother). One GAMG iteration is expensive, but few are needed.
+- `VecTDot` 24 / 12 = **2 per CG iteration** (α and β); `VecNorm` ≈ 1 per iteration for CG, the rest from GAMG setup (`VecNormalize`). → ~3 global reductions per CG iteration = 3 `MPI_Allreduce`s in parallel (week 4 reading).
+
+### What is multigrid / GAMG
+
+- **Smoother**: Jacobi/Gauss–Seidel remove **oscillatory** error fast but **smooth** error very slowly (a smooth wave ≈ its local average) → O(1/h²) iterations alone. After a few steps the error is smooth.
+- **Coarse-grid correction**: smooth error on a fine grid looks **oscillatory on a coarser grid** → smoothing works again there. Recursively: smooth → restrict residual → (coarser levels) → interpolate correction → smooth. = **V-cycle**.
+- Cost of a V-cycle ≈ O(N) (2D: 1 + 1/4 + 1/16 + … ≈ 4/3 of fine-grid work); convergence factor **independent of h** → iterations ~constant as M grows → optimal-order solver.
+- **Algebraic** multigrid builds coarse levels from the **matrix alone**: aggregate strongly connected unknowns → interpolation **P**; coarse matrix **A_c = PᵀAP** (Galerkin). Works on unstructured meshes (e.g. DG matrices). Geometric MG would need the coarse grids from me.
+- GAMG = PETSc's (smoothed-aggregation) AMG. In `-log_view`: `PCGAMG Squ/Opt lXX` = building aggregates/P on level XX; `MatPtAP` / `PCGAMG Gal` = coarse matrices; extra `MatMult`s = Chebyshev smoother + eigenvalue estimates; `PCApply` = one V-cycle per CG iteration.
+- Interview: "Smoothers remove high-frequency error; coarse grids turn low-frequency error into high-frequency error. A V-cycle costs O(N) and converges at an h-independent rate → optimal."
+- Read more: Briggs, Henson & McCormick, *A Multigrid Tutorial* (ch. 1–3); Saad ch. 13. (Week 7 reading.)
