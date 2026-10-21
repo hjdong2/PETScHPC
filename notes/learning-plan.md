@@ -280,7 +280,7 @@ Goal: on a range of grid sizes, measure **iterations** and **time** for several 
   - Fair comparison: same tolerance for all (`-ksp_rtol 1e-8`) and the same residual norm (`-ksp_norm_type unpreconditioned`; GMRES also needs `-ksp_pc_side right` for that norm).
   - Predict first, then check: κ(A) ∝ h⁻², CG iterations ∝ √κ ∝ 1/h → doubling M doubles iterations for `none`/`jacobi`/`ilu`; GAMG ≈ constant.
 - [x] **Step 5 — experiment 2: time vs. grid size** for the same runs: total `KSPSolve` time and setup (`PCSetUp`) time from `-log_view`. Which method wins at small M, which at large M? Why is GAMG's setup expensive but worth it?
-- [ ] **Step 6 — experiment 3: effect of parallelism on the preconditioner** (M = 513, `-n 1, 2, 4`): CG + ILU (becomes block Jacobi + ILU in parallel) vs. CG + GAMG. How do the iteration counts change, and why?
+- [x] **Step 6 — experiment 3: effect of parallelism on the preconditioner** (M = 513, `-n 1, 2, 4`): CG + ILU (becomes block Jacobi + ILU in parallel) vs. CG + GAMG. How do the iteration counts change, and why?
 - [ ] **Step 7 — automate**: a small bash script that loops over M and solvers and writes one line per run to a CSV file (`results/week4.csv`).
 - [ ] **Step 8 — plot** with Python/matplotlib: iterations vs. M and time vs. M (log-log), one line per method. Save as PNG in `results/`.
 - [ ] **Step 9 — README**: add a "Solver comparison" subsection with the table/plot and 3–4 bullets explaining it (condition number, why multigrid scales, setup vs. solve cost).
@@ -360,3 +360,29 @@ Setup: opt build, 1 process, `-ksp_rtol 1e-8 -ksp_norm_type unpreconditioned`, M
 - Small M: cheap iterations win (ILU fastest; GAMG slowest, setup 68% of its time). Crossover between M = 129 and 257. Large M: GAMG **12.7×** faster than plain CG, 5.6× faster than ILU, even though setup is still ~52% of its time.
 - Scaling: none/jacobi/ilu time ∝ iterations × N ∝ (1/h)(1/h²) = **N^1.5** (×8 per doubling of M); GAMG ∝ **N** (×4). Measured GAMG: 3.6, 4.4, 4.5 ✓.
 - **Cache effect**: none: ×9.6, **×13.4**, ×8.9. The Mflop/s column (last in `-log_view`) drops 4814 → 4024 → **2357** → 2128. At M = 257 the CSR matrix (~257²·60 B ≈ 4 MB) + vectors fit in L3 (12 MiB); at M = 513 (~16 MB matrix) they don't → every iteration streams from main memory → speed halves. **SpMV-based solvers are memory-bandwidth-bound** (week 2 caches → week 10 roofline).
+
+### Week 4 — step 6 results: parallelism vs. preconditioner (2026-10-20)
+
+Setup: opt build, M = 513, CG, `-ksp_rtol 1e-8 -ksp_norm_type unpreconditioned -random_rhs`, `-n 1, 2, 4` on my laptop.
+- `-pc_type ilu` works only on 1 process (ILU is sequential). In parallel PETSc uses **block Jacobi** (`-pc_type bjacobi`, default sub-PC ILU(0)): ILU on each rank's own block, couplings between ranks ignored. On 1 process bjacobi = ILU.
+
+| | n=1 | n=2 | n=4 |
+|---|---|---|---|
+| bjacobi its | 430 | 574 | 498 |
+| gamg its | 15 | 15 | 15 |
+| bjacobi time (s) | 1.653 | 1.647 | 0.904 |
+| gamg time (s) | 0.647 | 0.558 | 0.328 |
+
+- **GAMG**: iterations independent of p ✓ (coarse levels are built across all ranks — no information thrown away).
+- **bjacobi**: 1 → 2 up 33% ✓ (cut couplings). 2 → 4 **down** (surprise). Possible reasons: (1) competing effects — more cut couplings (worse) but smaller blocks where ILU(0) is more accurate (better): strips 513×257 vs squares 257×257; (2) the random b is **not the same** for different p (see TODO).
+- **Speedup** S(p) = T(1)/T(p): at p = 4 only **1.8× (bjacobi), 2.0× (gamg)**. Total Mflop/s (gamg) 1709 → 2353 → 3682 (2.2×). bjacobi at p = 2: no speedup — extra iterations eat the gain (per iteration it was 1.34× faster).
+- **Why not 4×**: CG is memory-bandwidth-bound. Logically each MPI process has private memory; **physically** all processes on one laptop/node share the same RAM and memory bus → shared bandwidth saturates. Across cluster **nodes**, each node adds its own bandwidth → scaling continues further (until communication dominates).
+- Interview: "Memory-bound codes stop scaling within a node once shared memory bandwidth is saturated. Adding cores doesn't add bandwidth; adding nodes does."
+
+**Halo exchange visible in `-log_view`** (columns Mess = number of messages, AvgLen = bytes per message), bjacobi `KSPSolve`:
+- p = 2 (strips 513×257): AvgLen 4.1e3 B = one grid row of 513 doubles × 8 B ✓; Mess 1.1e3 ≈ 574 its × 2 ranks × 1 neighbor ✓.
+- p = 4 (squares 257×257): AvgLen 2.1e3 B = 257 doubles × 8 B ✓; Mess 4.0e3 ≈ 498 its × 4 ranks × 2 neighbors ✓.
+→ One halo message per neighbor per MatMult; message length = block edge (strips vs squares from step 2.1).
+
+TODO before CRC scaling runs:
+- [ ] **Layout-independent random b**: `VecSetRandom` fills each rank's local part separately, so b changes with the number of processes → not exactly the same problem. Generate b from the global grid index (i, j) instead (e.g. a deterministic hash or a fixed smooth-but-rich function) so every p solves the identical system.
