@@ -274,12 +274,12 @@ Goal: on a range of grid sizes, measure **iterations** and **time** for several 
   Then a separate project build dir: `PETSC_ARCH=arch-linux-c-opt cmake -S . -B build-opt && cmake --build build-opt` (add `build-opt/` to `.gitignore`). Question to answer: why does `mpiexec` come from the arch you built with?
 - [x] **Step 2 — print the iteration count** in `poisson.cpp` with `KSPGetIterationNumber` (and the converged reason with `KSPGetConvergedReason`), so one output line contains M, iterations, error.
 - [x] **Step 3 — learn to read `-log_view`** on one run (e.g. M = 513, CG + GAMG): find `KSPSolve`, `MatMult`, `PCSetUp`, `PCApply`, `VecTDot`/`VecNorm`. What do the columns Count, Time, %T mean? Which event takes most time?
-- [ ] **Step 4 — experiment 1: iterations vs. grid size** (1 process, opt build), M = 65, 129, 257, 513, 1025:
+- [x] **Step 4 — experiment 1: iterations vs. grid size** (1 process, opt build), M = 65, 129, 257, 513, 1025:
   - `-ksp_type cg` with `-pc_type none | jacobi | ilu | gamg`
   - `-ksp_type gmres -pc_type ilu` (compare with CG + ILU)
   - Fair comparison: same tolerance for all (`-ksp_rtol 1e-8`) and the same residual norm (`-ksp_norm_type unpreconditioned`; GMRES also needs `-ksp_pc_side right` for that norm).
   - Predict first, then check: κ(A) ∝ h⁻², CG iterations ∝ √κ ∝ 1/h → doubling M doubles iterations for `none`/`jacobi`/`ilu`; GAMG ≈ constant.
-- [ ] **Step 5 — experiment 2: time vs. grid size** for the same runs: total `KSPSolve` time and setup (`PCSetUp`) time from `-log_view`. Which method wins at small M, which at large M? Why is GAMG's setup expensive but worth it?
+- [x] **Step 5 — experiment 2: time vs. grid size** for the same runs: total `KSPSolve` time and setup (`PCSetUp`) time from `-log_view`. Which method wins at small M, which at large M? Why is GAMG's setup expensive but worth it?
 - [ ] **Step 6 — experiment 3: effect of parallelism on the preconditioner** (M = 513, `-n 1, 2, 4`): CG + ILU (becomes block Jacobi + ILU in parallel) vs. CG + GAMG. How do the iteration counts change, and why?
 - [ ] **Step 7 — automate**: a small bash script that loops over M and solvers and writes one line per run to a CSV file (`results/week4.csv`).
 - [ ] **Step 8 — plot** with Python/matplotlib: iterations vs. M and time vs. M (log-log), one line per method. Save as PNG in `results/`.
@@ -318,3 +318,45 @@ Interview one-liners to be able to say after this week:
 - GAMG = PETSc's (smoothed-aggregation) AMG. In `-log_view`: `PCGAMG Squ/Opt lXX` = building aggregates/P on level XX; `MatPtAP` / `PCGAMG Gal` = coarse matrices; extra `MatMult`s = Chebyshev smoother + eigenvalue estimates; `PCApply` = one V-cycle per CG iteration.
 - Interview: "Smoothers remove high-frequency error; coarse grids turn low-frequency error into high-frequency error. A V-cycle costs O(N) and converges at an h-independent rate → optimal."
 - Read more: Briggs, Henson & McCormick, *A Multigrid Tutorial* (ch. 1–3); Saad ch. 13. (Week 7 reading.)
+
+### Week 4 — steps 4–5 results (2026-10-20)
+
+Setup: opt build, 1 process, `-ksp_rtol 1e-8 -ksp_norm_type unpreconditioned`, M = 65 … 1025.
+
+**Predictions** (CG iterations ∝ √κ):
+- Eigenvalues λ(p,q) = (4/h²)(sin²(pπh/2) + sin²(qπh/2)) → λ_min ≈ 2π² (independent of h), λ_max ≈ 8/h² → κ ≈ 4/(π²h²) ∝ 1/h².
+- h → h/2 ⇒ κ → 4κ ⇒ √κ → 2√κ ⇒ **iterations ×2** for none / jacobi / ilu.
+- Jacobi: P⁻¹A = (h²/4)·A on the interior → same κ → ≈ same as none. ILU: κ smaller by a constant → fewer iterations, still ×2. GAMG: h-independent → ≈ constant.
+
+**Surprise 1 — 1 iteration for none and jacobi.** b = 2π² sin(πx)sin(πy) is an **eigenvector** of A (Ab = λb) → x* = b/λ ∈ span{b} = first Krylov space → CG done in 1 step. Jacobi = constant × A → b still an eigenvector. ILU changes the eigenvectors → normal behavior.
+→ Lesson: the manufactured solution is great for **accuracy** checks but a **bad test for solver comparison** (single eigenvector = easiest input). Added `-random_rhs` (`VecSetRandom(b, NULL)`, fixed seed → reproducible); error is only printed for the default problem.
+
+**Iterations (CG, `-random_rhs`):**
+
+| M | none | jacobi | ilu | gamg |
+|---|---|---|---|---|
+| 65 | 233 | 191 | 63 | 11 |
+| 129 | 456 | 379 | 124 | 12 |
+| 257 | 924 | 752 | 227 | 13 |
+| 513 | 1819 | 1449 | 430 | 15 |
+| 1025 | 3647 | 2944 | 877 | 17 |
+
+- none/jacobi/ilu: ×2 per doubling ✓. ILU ≈ 4× fewer than none (same slope, lower line) ✓. GAMG 11 → 17 for 256× more unknowns ✓ (slight growth is typical for AMG).
+- Surprise 2: Jacobi ≈ 20% better than none on every grid. Hypothesis: identity boundary rows have eigenvalue 1, an **outlier below** the interior spectrum [2π², 8/h²] without Jacobi; with Jacobi the interior is scaled to [π²h²/2, 2], so 1 is inside → no outlier. Test (optional): zero b on the boundary → none and jacobi should match exactly.
+
+**CG vs GMRES(30), both ILU** (`-ksp_pc_side right` for the unpreconditioned norm): GMRES 74, 197, 823, 2939, **DIVERGED_ITS at M = 1025** (10 000 limit).
+- GMRES(30) restarts **every 30 iterations, always** → throws away the Krylov basis → loses optimality, can stagnate. CG gets optimality for free from a short 3-term recurrence (A symmetric) with constant memory.
+- A `DIVERGED_ITS` run is **not a result** — mark it "did not converge", never "10000 iterations". (Optional: `-ksp_gmres_restart 200`.)
+
+**Time = PCSetUp + KSPSolve (s):**
+
+| M | none | jacobi | ilu | gamg |
+|---|---|---|---|---|
+| 129 | 0.033 | 0.034 | 0.027 | 0.041 |
+| 257 | 0.318 | 0.304 | 0.233 | 0.150 |
+| 513 | 4.26 | 3.43 | 1.87 | 0.658 |
+| 1025 | 37.8 | 32.4 | 16.75 | 2.98 |
+
+- Small M: cheap iterations win (ILU fastest; GAMG slowest, setup 68% of its time). Crossover between M = 129 and 257. Large M: GAMG **12.7×** faster than plain CG, 5.6× faster than ILU, even though setup is still ~52% of its time.
+- Scaling: none/jacobi/ilu time ∝ iterations × N ∝ (1/h)(1/h²) = **N^1.5** (×8 per doubling of M); GAMG ∝ **N** (×4). Measured GAMG: 3.6, 4.4, 4.5 ✓.
+- **Cache effect**: none: ×9.6, **×13.4**, ×8.9. The Mflop/s column (last in `-log_view`) drops 4814 → 4024 → **2357** → 2128. At M = 257 the CSR matrix (~257²·60 B ≈ 4 MB) + vectors fit in L3 (12 MiB); at M = 513 (~16 MB matrix) they don't → every iteration streams from main memory → speed halves. **SpMV-based solvers are memory-bandwidth-bound** (week 2 caches → week 10 roofline).
