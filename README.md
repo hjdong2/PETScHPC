@@ -79,3 +79,30 @@ The results are generated using above command, run 1 process, and change $M$ fro
 | 129 | 0.0078125 | 5.020e-5 | 4.000 |
 - the ratio (error previous M / error current M) is 4, shows the method is second-order ($O(h^2)$)
 - `-n 1` and `-n 4` give the same error ($5.02009e-05$ at $M = 129$)
+
+## Solver comparison
+CG with 4 preconditioners (none, Jacobi, ILU, GAMG), random right-hand side, `-ksp_rtol 1e-8`, 1 process, M from 65 to 1025, 
+optimized PETSc build, best of 3 runs.
+
+```bash
+./scripts/run_week4.sh | tee results/week4.csv
+python3 scripts/plot_week4.py
+```
+Iterations: none/Jacobi/ILU grow $\propto M$; GAMG stays almost constant
+
+![CG iterations vs. grid size M](results/iterations.png)
+
+Time: none/Jacobi/ILU grow $\propto N^{1.5}$; GAMG grows $\propto N$
+
+![CG solver time vs. number of unknowns N](results/time.png)
+
+At $M = 1025$ (about $10^6 unknowns$): 
+| Preconditioner | Iterations | Time (s) | Speedup vs. none |
+|---|---|---|---|
+| none   | 3647 | 35.66 | 1.0x |
+| Jacobi | 2944 | 30.76 | 1.2x |
+| ILU    | 877  | 14.94 | 2.4x |
+| GAMG   | 513  | 0.42  | 11.9x |
+Laptop timings (Intel Core Ultra 7 155U); indicative only.
+
+
