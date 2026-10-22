@@ -96,13 +96,20 @@ Time: none/Jacobi/ILU grow $\propto N^{1.5}$; GAMG grows $\propto N$
 
 ![CG solver time vs. number of unknowns N](results/time.png)
 
-At $M = 1025$ (about $10^6 unknowns$): 
+At $M = 1025$ (about $10^6$ unknowns): 
+
 | Preconditioner | Iterations | Time (s) | Speedup vs. none |
 |---|---|---|---|
 | none   | 3647 | 35.66 | 1.0x |
 | Jacobi | 2944 | 30.76 | 1.2x |
 | ILU    | 877  | 14.94 | 2.4x |
 | GAMG   | 17  | 2.99 | 11.9x |
+
 Laptop timings (Intel Core Ultra 7 155U); indicative only.
+
+**Why:**
+- **Iterations grow $\propto M$ for none/Jacobi/ILU.** The condition number of the 5-point Laplacian is $\kappa \approx 4/(\pi^2 h^2) \propto h^{-2}$, and CG needs $O(\sqrt{\kappa}) = O(1/h)$ iterations, so doubling $M$ doubles the iterations. Jacobi only rescales $A$ by a constant (same $\kappa$), and ILU lowers $\kappa$ by a constant factor (about 4× fewer iterations, same slope).
+- **GAMG is optimal.** Its iteration count is almost independent of $h$ (11 → 17 while $N$ grows about 250×), so its time grows only $\propto N$. Its setup cost makes it the slowest method on the smallest grid, but it is the fastest from $N \approx 17{,}000$ on, and 11.9× faster than plain CG at $N \approx 10^6$.
+- **Memory, not arithmetic, limits the simple methods.** Between $M = 257$ and $513$ their time grows faster than $N^{1.5}$: the matrix (about 16 MB) and vectors no longer fit in the 12 MB L3 cache, and the rate drops from about 4000 to 2400 Mflop/s. Sparse matrix-vector products are memory-bandwidth-bound.
 
 
