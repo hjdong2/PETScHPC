@@ -102,7 +102,7 @@ At $M = 1025$ (about $10^6 unknowns$):
 | none   | 3647 | 35.66 | 1.0x |
 | Jacobi | 2944 | 30.76 | 1.2x |
 | ILU    | 877  | 14.94 | 2.4x |
-| GAMG   | 513  | 0.42  | 11.9x |
+| GAMG   | 17  | 2.99 | 11.9x |
 Laptop timings (Intel Core Ultra 7 155U); indicative only.
 
 

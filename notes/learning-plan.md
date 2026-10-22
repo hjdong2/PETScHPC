@@ -281,8 +281,8 @@ Goal: on a range of grid sizes, measure **iterations** and **time** for several 
   - Predict first, then check: κ(A) ∝ h⁻², CG iterations ∝ √κ ∝ 1/h → doubling M doubles iterations for `none`/`jacobi`/`ilu`; GAMG ≈ constant.
 - [x] **Step 5 — experiment 2: time vs. grid size** for the same runs: total `KSPSolve` time and setup (`PCSetUp`) time from `-log_view`. Which method wins at small M, which at large M? Why is GAMG's setup expensive but worth it?
 - [x] **Step 6 — experiment 3: effect of parallelism on the preconditioner** (M = 513, `-n 1, 2, 4`): CG + ILU (becomes block Jacobi + ILU in parallel) vs. CG + GAMG. How do the iteration counts change, and why?
-- [ ] **Step 7 — automate**: a small bash script that loops over M and solvers and writes one line per run to a CSV file (`results/week4.csv`).
-- [ ] **Step 8 — plot** with Python/matplotlib: iterations vs. M and time vs. M (log-log), one line per method. Save as PNG in `results/`.
+- [x] **Step 7 — automate**: a small bash script that loops over M and solvers and writes one line per run to a CSV file (`results/week4.csv`).
+- [x] **Step 8 — plot** with Python/matplotlib: iterations vs. M and time vs. M (log-log), one line per method. Save as PNG in `results/`.
 - [ ] **Step 9 — README**: add a "Solver comparison" subsection with the table/plot and 3–4 bullets explaining it (condition number, why multigrid scales, setup vs. solve cost).
 - [ ] **Reading (week 4)**: MPI collectives (`MPI_Allreduce`, `MPI_Bcast`); why dot products limit Krylov scaling. Tie to my `-log_view`: how many `VecTDot`/`VecNorm` calls per CG iteration?
 
@@ -386,3 +386,37 @@ Setup: opt build, M = 513, CG, `-ksp_rtol 1e-8 -ksp_norm_type unpreconditioned -
 
 TODO before CRC scaling runs:
 - [ ] **Layout-independent random b**: `VecSetRandom` fills each rank's local part separately, so b changes with the number of processes → not exactly the same problem. Generate b from the global grid index (i, j) instead (e.g. a deterministic hash or a fixed smooth-but-rich function) so every p solves the identical system.
+
+### Week 4 — step 7: benchmark script (2026-10-21)
+
+`scripts/run_week4.sh` runs all week 4 cases and prints CSV; run with
+`./scripts/run_week4.sh | tee results/week4.csv` (`tee` = write to file **and** screen; overwrites the file).
+Columns: `ksp,pc,np,M,rep,its,reason,t_setup,t_solve`. 26 cases × 3 repeats = 78 runs.
+
+Bash lessons:
+- `set -euo pipefail` → stop on errors / unset variables / failed pipe parts (like `PetscCall`).
+- `out=$(command)` runs the program **once** and stores all output; then parse it several times.
+- Parsing: `grep -o 'its= [0-9]*' | awk '{print $2}'` (only the match, then 2nd word); `awk '/^KSPSolve /{print $4}'` (4th column of the line starting with KSPSolve).
+- Functions: `run_case() { local ksp=$1 pc=$2 ...; }` — **no types, empty ()**; arguments are positional `$1, $2, …`; `local` = only inside the function. Call: `run_case cg $pc 1 $M`.
+- `pc` is the text "pc", **`$pc` is the variable's value**. Missing `$` → PETSc got `-M M` → "Input string M has no integer value". PETSc's **option table** in the error shows exactly what the program received.
+- `chmod +x` once to make a script executable. A bash function lives in the script, not in a .cpp file.
+- New folders/files need `git add` (`-a` only covers already-tracked files).
+
+Timing noise:
+- Same case (GAMG, 1 proc, M = 513) measured in both experiments: setup 0.390 vs 0.556 s → single timings are unreliable.
+- Fix: repeat each case (`rep` 1–3) and use the **minimum** time per case (least disturbed run).
+- Repeats back-to-back agree within ~2%, but experiment 3 (run minutes later) was 10–25% slower → likely **thermal throttling** of the 15 W laptop CPU (hypothesis). Compare only runs made under the same conditions; speedups within experiment 3 are still fair.
+- Laptop timings are indicative only → real scaling study on CRC (dedicated, cooled nodes).
+
+### Week 4 — step 8: plots (2026-10-21)
+
+`scripts/plot_week4.py` reads `results/week4.csv` → `results/iterations.png`, `results/time.png`.
+- Install: `sudo apt install python3-pandas` (plain `pip install` is blocked on Ubuntu 24.04 — "externally managed environment").
+- pandas: `pd.read_csv`; column arithmetic is element-wise (`df["t_total"] = df["t_setup"] + df["t_solve"]`); filter rows with `df[(cond1) & (cond2)]` (parentheses required); `groupby([...]).agg(t_total=("t_total","min"))` = one row per case, best of the repeats. `assert` that every run converged.
+- 26 cases → 25 rows after groupby (GAMG 1 proc M = 513 appears in both experiments; bjacobi np=1 stays separate because its name differs from ilu).
+- matplotlib: `matplotlib.use("Agg")` (write files, no window); `ax.set_xscale("log")`; log-log turns power laws into straight lines → read scaling from the slope. Dashed reference lines (∝ M, ∝ N, ∝ N^1.5), shifted down so they don't hide data. Fixed colors + different marker shapes per method (readable without color).
+- Viewing from WSL: `cp results/time.png /mnt/c/Users/hdong2/Desktop/` (or `code results/time.png`).
+
+What the plots show:
+- **iterations.png** (x = M): none/jacobi/ilu parallel to slope 1 (∝ M ∝ 1/h, from κ ∝ 1/h²); ilu a constant factor lower; gamg almost flat (11 → 17).
+- **time.png** (x = N = M²): crossover near N ≈ 17 000 (M = 129) — gamg slowest at the smallest size (setup), fastest beyond; at N ≈ 10⁶: 3 s vs 35 s. gamg ∥ ∝ N (optimal); none/jacobi/ilu ∥ ∝ N^1.5, **steeper** between M = 257 and 513 (cache kink: working set leaves L3). jacobi ≈ none in time (fewer iterations, slightly costlier ones).
