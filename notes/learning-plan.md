@@ -12,7 +12,7 @@ Develop in WSL; run scaling experiments on the CRC cluster.
 - [x] **Week 1 (Oct 5–11)** — Install PETSc in WSL, run KSP tutorial `ex2`, get a CRC account
 - [x] **Week 2 (Oct 12–18)** — Repository + CMake finding PETSc (pkg-config, `mpicc`/`mpicxx`); "hello PETSc" printing ranks with `mpiexec -n 4`; optional: read about DMDA
 - [x] **Week 3 (Oct 19–25)** — 2D Poisson solver with DMDA; verify with a manufactured solution (error should decrease like h²) — DONE early (2026-10-18)
-- [ ] **Week 4 (Oct 26–Nov 1)** — Compare solvers and preconditioners (`-ksp_type`, `-pc_type`, incl. `gamg`; `-log_view`)
+- [x] **Week 4 (Oct 26–Nov 1)** — Compare solvers and preconditioners (`-ksp_type`, `-pc_type`, incl. `gamg`; `-log_view`) — DONE early (2026-10-22)
 - [ ] **Weeks 5–6 (Nov 2–15)** — On CRC: batch jobs, strong and weak scaling, plots
 - [ ] **Week 7 (Nov 16–22)** — My Eigen GMRES vs. PETSc's KSPGMRES; README → **minimum version done, update résumé, start applying**
 - [ ] **Weeks 8–10 (Nov 23–Dec 13)** — OpenMP project: CSR SpMV, roofline analysis, profiling
@@ -30,7 +30,7 @@ How to make it count:
 | 1 | Amdahl's and Gustafson's laws | LLNL *Introduction to Parallel Computing* | [x] |
 | 2 | Memory hierarchy, caches, cache lines, locality | Eijkhout (single-processor chapter); Drepper (CPU caches, what programmers can do) | [x] |
 | 3 | MPI basics: processes, ranks, send/receive, deadlock | LLNL MPI tutorial | [x] |
-| 4 | MPI collectives (`Allreduce`, `Bcast`); dot products as a Krylov bottleneck | LLNL MPI tutorial; Eijkhout (parallel linear algebra) | [ ] |
+| 4 | MPI collectives (`Allreduce`, `Bcast`); dot products as a Krylov bottleneck | LLNL MPI tutorial; Eijkhout (parallel linear algebra) | [x] |
 | 5 | Strong vs. weak scaling, parallel efficiency, load balancing | LLNL intro; Hager & Wellein | [ ] |
 | 6 | Domain decomposition, halo/ghost exchange (what DMDA does) | Eijkhout; PETSc manual (DMDA) | [ ] |
 | 7 | Preconditioning: Jacobi, ILU, multigrid; why multigrid scales | Saad (preconditioning chapters); ATPESC talks | [ ] |
@@ -283,7 +283,7 @@ Goal: on a range of grid sizes, measure **iterations** and **time** for several 
 - [x] **Step 6 — experiment 3: effect of parallelism on the preconditioner** (M = 513, `-n 1, 2, 4`): CG + ILU (becomes block Jacobi + ILU in parallel) vs. CG + GAMG. How do the iteration counts change, and why?
 - [x] **Step 7 — automate**: a small bash script that loops over M and solvers and writes one line per run to a CSV file (`results/week4.csv`).
 - [x] **Step 8 — plot** with Python/matplotlib: iterations vs. M and time vs. M (log-log), one line per method. Save as PNG in `results/`.
-- [ ] **Step 9 — README**: add a "Solver comparison" subsection with the table/plot and 3–4 bullets explaining it (condition number, why multigrid scales, setup vs. solve cost).
+- [x] **Step 9 — README**: add a "Solver comparison" subsection with the table/plot and 3–4 bullets explaining it (condition number, why multigrid scales, setup vs. solve cost).
 - [ ] **Reading (week 4)**: MPI collectives (`MPI_Allreduce`, `MPI_Bcast`); why dot products limit Krylov scaling. Tie to my `-log_view`: how many `VecTDot`/`VecNorm` calls per CG iteration?
 
 Interview one-liners to be able to say after this week:
@@ -420,3 +420,28 @@ Timing noise:
 What the plots show:
 - **iterations.png** (x = M): none/jacobi/ilu parallel to slope 1 (∝ M ∝ 1/h, from κ ∝ 1/h²); ilu a constant factor lower; gamg almost flat (11 → 17).
 - **time.png** (x = N = M²): crossover near N ≈ 17 000 (M = 129) — gamg slowest at the smallest size (setup), fastest beyond; at N ≈ 10⁶: 3 s vs 35 s. gamg ∥ ∝ N (optimal); none/jacobi/ilu ∥ ∝ N^1.5, **steeper** between M = 257 and 513 (cache kink: working set leaves L3). jacobi ≈ none in time (fewer iterations, slightly costlier ones).
+
+### Week 4 — MPI collectives (reading, 2026-10-24)
+
+Questions:
+1. Collective vs point-to-point; what do `MPI_Bcast`, `MPI_Reduce`, `MPI_Allreduce` do?
+2. How does an Allreduce work internally, and why does it cost ~log(p)?
+3. Why is a dot product a global synchronization point in parallel CG? How many per iteration?
+4. Why do dot products limit strong scaling, although they do little arithmetic?
+
+Notes:
+1. A **collective** involves **all** processes of a communicator — every rank must call it (one rank skipping it → everyone waits forever = deadlock).
+   - `MPI_Bcast`: root → all. CFD example: root reads Mach/Reynolds number, broadcasts it.
+   - `MPI_Reduce`: combine (sum/max/…) from all → result on **one** rank. Example: global residual for printing on rank 0.
+   - `MPI_Allreduce`: combine from all → result on **every** rank. Example: a vector norm or dot product every rank needs.
+2. **Tree, not chain.** Naive chain: p − 1 steps. Recursive doubling ("butterfly"): step 1 exchange+add with partner at distance 1, step 2 at distance 2, then 4, … → after **log₂(p)** steps every rank has the sum.
+   Cost per step ≈ α (latency) + n·β (size × time per byte). A dot product sends **one number** → cost ≈ **log₂(p)·α** (1024 ranks → 10 latency steps of a few µs).
+3. Each rank computes a **partial sum** over its own entries, but CG needs the **global** value (α = (r,z)/(p,Ap), β, the norm) **on every rank** before the next vector update → no rank can continue until all have contributed → **global synchronization**: everyone waits for the slowest rank, then for the Allreduce.
+   From my `-log_view`: **2 dot products + 1 norm = 3 reductions per CG iteration.**
+4. A dot product does **not** move much data (one number per rank) — the cost is **latency + synchronization**:
+   - strong scaling: local work ∝ N/p **shrinks**, Allreduce cost ∝ log(p)·α **grows** → at some p the reductions dominate → acts like a serial fraction → **Amdahl** (week 1).
+   - any slightly slow rank (OS noise, load imbalance) delays all ranks at every reduction.
+   - Remedies: **pipelined CG** (`-ksp_type pipecg`, non-blocking `MPI_Iallreduce` overlapped with MatMult); **s-step / communication-avoiding CG** (several iterations per reduction). Trade-off: somewhat less numerical stability.
+   - Contrast: MatMult halo exchange = neighbor-only, cost ∝ block perimeter, does not grow with p for a fixed local size.
+
+Interview: "Dot products send almost no data, but each is a global synchronization costing ~log(p) latencies. In strong scaling the local work shrinks while that cost grows, so reductions become the Amdahl bottleneck of Krylov methods; pipelined CG hides them with non-blocking Allreduce."
