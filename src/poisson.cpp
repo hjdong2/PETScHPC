@@ -1,6 +1,16 @@
 
+#include <cstdint>
 #include <petscdmda.h>
 #include <petscksp.h>
+
+static double hashUniform(std::uint64_t key)
+{
+    std::uint64_t z = key + 0x9e3779b97f4a7c15ULL;
+    z = (z ^ (z >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    z = (z ^ (z >> 27)) * 0x94d049bb133111ebULL;
+    z = z ^ (z >> 31);
+    return (z >> 11) * 0x1.0p-53;
+}
 
 int main (int argc, char** argv)
 {
@@ -104,15 +114,15 @@ int main (int argc, char** argv)
     PetscCall(DMDAVecGetArray(da, b, &barr));
     for (j = ys; j < ys + ym; ++j) {
         for (i = xs; i < xs + xm; ++i) {
-            if (!onBoundary(i, j)) {
+            if (randomRhs) {
+                barr[j][i] = hashUniform(std::uint64_t(j * M + i));
+            } else if (!onBoundary(i, j)) {
                 barr[j][i] = 2 * PETSC_PI * PETSC_PI  * PetscSinReal(PETSC_PI * i * h) * PetscSinReal(PETSC_PI * j * h);
             }
         }
     }
     PetscCall(DMDAVecRestoreArray(da, b, &barr));
-    if (randomRhs) {
-        PetscCall(VecSetRandom(b, NULL));
-    } 
+ 
     PetscCall(DMDAVecGetArray(da, u, &uarr));
     for (j = ys; j < ys + ym; ++j) {
         for (i = xs; i < xs + xm; ++i) {
