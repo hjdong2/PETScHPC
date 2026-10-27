@@ -385,7 +385,9 @@ Setup: opt build, M = 513, CG, `-ksp_rtol 1e-8 -ksp_norm_type unpreconditioned -
 → One halo message per neighbor per MatMult; message length = block edge (strips vs squares from step 2.1).
 
 TODO before CRC scaling runs:
-- [ ] **Layout-independent random b**: `VecSetRandom` fills each rank's local part separately, so b changes with the number of processes → not exactly the same problem. Generate b from the global grid index (i, j) instead (e.g. a deterministic hash or a fixed smooth-but-rich function) so every p solves the identical system.
+- [x] **Layout-independent random b**: `VecSetRandom` fills each rank's local part separately, so b changes with the number of processes → not exactly the same problem. Generate b from the global grid index (i, j) instead (e.g. a deterministic hash or a fixed smooth-but-rich function) so every p solves the identical system.
+  Done 2026-10-26: `hashUniform(j*M + i)` (splitmix64) in the b fill loop, interior **and** boundary points; `||b|| = 74.5033521930074` and `its = 465` identical on 1, 2, 4 processes (M = 129, CG, no PC).
+- [ ] **Rerun week 4 with the new random b** (`./scripts/run_week4.sh | tee results/week4.csv`, `python3 scripts/plot_week4.py`), then update the README table/plots — the current README numbers come from the old `VecSetRandom` b (e.g. 456 vs 465 iterations at M = 129).
 
 ### Week 4 — step 7: benchmark script (2026-10-21)
 
